@@ -1,0 +1,76 @@
+# Core LangChain
+langchain
+langchain-core
+langchain-community
+langchain-classic
+langchain-openai
+langchain-huggingface
+langchain-text-splitters
+langchain-chroma
+
+# Vector Databases
+#chromadb
+#faiss-cpu
+#qdrant-client
+#pymilvus
+#weaviate-client
+#pinecone
+
+# Embeddings & Models
+#sentence-transformers
+#transformers
+#torch
+#accelerate
+#tiktoken
+
+# OpenAI / OpenRouter
+openai
+
+# Hugging Face
+huggingface-hub
+
+# Document Loaders
+pypdf
+pymupdf
+python-docx
+unstructured
+markdown
+beautifulsoup4
+lxml
+html5lib
+pandas
+openpyxl
+
+# OCR (Optional)
+pytesseract
+Pillow
+
+# Web Search
+duckduckgo-search
+
+# Hybrid Search
+rank-bm25
+
+# Utilities
+numpy
+scikit-learn
+python-dotenv
+requests
+httpx
+aiohttp
+
+# Web Apps
+#streamlit
+#fastapi
+#uvicorn
+
+# Jupyter
+#ipykernel
+#jupyter
+
+# Logging & Progress
+tqdm
+rich
+
+# Optional Parsing
+lark
