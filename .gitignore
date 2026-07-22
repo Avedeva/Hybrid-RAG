@@ -11,3 +11,5 @@ wheels/
 uv.lock
 pyproject.toml
 .env
+chroma_db
+loader.ipynb
