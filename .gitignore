@@ -13,3 +13,4 @@ pyproject.toml
 .env
 my_db
 loader.ipynb
+my_db_chill
