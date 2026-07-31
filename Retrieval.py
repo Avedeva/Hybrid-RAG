@@ -4,7 +4,6 @@ from dotenv import load_dotenv
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import OpenAIEmbeddings,ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.retrievers import BaseRetriever
 from langchain_core.documents import Document
 from langchain_community.retrievers import BM25Retriever
 import os
@@ -18,7 +17,7 @@ api_key = os.getenv("OPENROUTER_FREE_RAG")
 
 vector_store = Chroma(
     embedding_function=OpenAIEmbeddings(
-        model='nvidia/nemotron-3-embed-1b:free',
+        model='text-embedding-3-small',
         api_key=api_key,
         base_url="https://openrouter.ai/api/v1"
     ),persist_directory="my_db",
@@ -49,6 +48,10 @@ with st.spinner("🔁 Retrieving Doc's .... "):
     docs_retrieve_bm25 = retriever_bm25.invoke(Query)
 # retrieving from using cosine similarity
     docs_retrieve_similarity = vector_store.similarity_search(Query,k=5)
+
+with st.spinner("🤖Cross-Encoder Reranker"):
+    pass
+
 
 
 
