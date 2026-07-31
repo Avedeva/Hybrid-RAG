@@ -18,7 +18,7 @@ api_key = os.getenv("OPENROUTER_FREE_RAG")
 
 vector_store = Chroma(
     embedding_function=OpenAIEmbeddings(
-        model='openai/text-embedding-3-small',
+        model='nvidia/nemotron-3-embed-1b:free',
         api_key=api_key,
         base_url="https://openrouter.ai/api/v1"
     ),persist_directory="my_db",
