@@ -1,304 +1,146 @@
-# 🎯 Hybrid RAG System
+# Hybrid RAG — Retrieval-Augmented QA over Research Papers
 
-A comprehensive **Retrieval-Augmented Generation (RAG)** system that combines **dense vector retrieval** (semantic similarity) and **BM25 sparse retrieval** (keyword matching) with **Reciprocal Rank Fusion (RRF)** for optimal document retrieval across research papers on tokenizers and self-attention mechanisms.
+A retrieval-augmented generation pipeline that answers questions over a corpus of PDFs (and web-loaded papers) by combining lexical and semantic retrieval, fusing the results, and reranking before generation — deployed as a Streamlit app.
 
-## 📋 Overview
+Built to explore what actually improves retrieval quality in RAG systems beyond naive top-k vector search: hybrid retrieval, rank fusion, and cross-encoder reranking, each added because single-method retrieval leaves clear gaps (semantic search misses exact terms/acronyms, lexical search misses paraphrases).
 
-This project implements a production-ready RAG pipeline designed to answer technical questions about:
-- **Tokenizers** - Subword tokenization strategies and implementations
-- **Self-Attention Mechanisms** - Transformer architecture fundamentals
-- **LLM Internals** - How modern language models process and generate text
+---
 
-The system ingests 6 research papers + the Annotated Transformer tutorial, chunks the content intelligently, and retrieves the most relevant information using a hybrid retrieval approach before passing it to an LLM for answer generation.
+## Why Hybrid, Why Rerank
 
-## 🏗️ Architecture
+Vector similarity search alone struggles with:
+- **Exact-match terms** — acronyms, symbols, proper nouns, code identifiers that embeddings don't represent well.
+- **Ranking quality at the top** — cosine similarity is a decent coarse filter but a weak fine-grained ranker; it can put a tangentially-related chunk above a directly relevant one.
 
-### Three-Stage Pipeline
+Pure lexical (BM25) retrieval struggles with:
+- **Paraphrasing and synonymy** — a question phrased differently from the source text gets no match even when the content is identical.
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│ 1. DOCUMENT LOADING & CHUNKING                              │
-│    ├─ Docling: PDF extraction & parsing                     │
-│    ├─ Recursive Character Splitter: Smart chunking (100 overlap)
-│    └─ Chroma Vector DB: Persistence                         │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 2. HYBRID RETRIEVAL (Dual Strategy)                         │
-│    ├─ Dense Retrieval: Cosine similarity (OpenAI embeddings)│
-│    ├─ Sparse Retrieval: BM25 keyword matching               │
-│    └─ Fusion: RRF algorithm combines both rankings          │
-└─────────────────────────────────────────────────────────────┘
-                            ↓
-┌─────────────────────────────────────────────────────────────┐
-│ 3. LLM ANSWER GENERATION                                    │
-│    ├─ Context: Top-k fused documents                        │
-│    ├─ Model: Nvidia Nemotron-3 Ultra 550B                   │
-│    └─ Output: Grounded, concise answers                     │
-└─────────────────────────────────────────────────────────────┘
-```
+The pipeline addresses both by retrieving from each independently, fusing the rankings, then applying a cross-encoder — a slower but more accurate model that scores the query and each candidate chunk *jointly* rather than comparing pre-computed embeddings — to re-rank the fused list before it goes to the LLM.
 
-## 📦 Project Structure
+---
+
+## Architecture
 
 ```
-Avedeva/
-├── PDF's/                      # Research papers & documentation (6 papers)
-│   ├── [tokenizer papers]
-│   └── [self-attention papers]
-├── Chunking.py                 # Document loading & chunking logic
-├── Retrieval.py                # Hybrid retrieval + LLM inference (Streamlit app)
-├── .gitignore                  # Standard Python ignore patterns
-├── .python-version             # Python version specification
-├── requirement.txt             # Dependencies
-└── README.md                   # This file
+PDFs + web docs
+      │
+      ▼
+  DoclingLoader (parsing, layout-aware extraction)
+      │
+      ▼
+  RecursiveCharacterTextSplitter (chunking, overlap = 100)
+      │
+      ▼
+  chunks.pkl ──────────────────────────────────────────┐
+      │                                                 │
+      ▼                                                 ▼
+  OpenAI text-embedding-3-small (via OpenRouter)   BM25Retriever
+      │                                                 │
+      ▼                                                 │
+  Chroma vector store (persisted, content-hash          │
+  dedup on ingest)                                      │
+      │                                                 │
+      ▼                                                 ▼
+  Dense similarity search (k=10)  ────────────►  Reciprocal Rank Fusion (k=60)
+                                                         │
+                                                         ▼
+                                          cross-encoder/ms-marco-MiniLM-L-6-v2
+                                          (rerank fused candidates → top 5)
+                                                         │
+                                                         ▼
+                                          Prompt template + retrieved context
+                                                         │
+                                                         ▼
+                                          nvidia/nemotron-3-ultra-550b-a55b
+                                          (via OpenRouter) → answer
+                                                         │
+                                                         ▼
+                                              Streamlit UI (query in, answer out)
 ```
 
-## 🚀 Quick Start
+---
 
-### Prerequisites
-- **Python 3.10+**
-- **API Keys**: 
-  - `HF_TOKEN` (HuggingFace - for document processing)
-  - `OPENROUTER_FREE_RAG` (OpenRouter - for embeddings & LLM)
+## Pipeline Stages
 
-### Installation
+**1. Ingestion (`load.py`)**
+Recursively collects all PDFs from a target directory, adds a supplementary URL source, and loads everything through `DoclingLoader` — chosen for layout-aware parsing (tables, headers, reading order) over naive text extraction. Documents are chunked with `RecursiveCharacterTextSplitter` and serialized to `chunks.pkl` for reuse without re-parsing.
 
-1. **Clone the repository**
-   ```bash
-   git clone <repo-url>
-   cd Avedeva
-   ```
+**2. Embedding & storage (`embed.py`)**
+Chunks are embedded with OpenAI's `text-embedding-3-small` (served through OpenRouter) and stored in a persisted Chroma collection. Ingestion is idempotent: each chunk is hashed (`md5(source + text)`) and checked against existing IDs in the store, so re-running the script only adds genuinely new chunks instead of duplicating the collection.
 
-2. **Set up Python environment**
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: venv\Scripts\activate
-   ```
+**3. Retrieval & generation (`Retrieval.py`)**
+For each query:
+- **Dense retrieval** — top-10 via Chroma cosine similarity.
+- **Lexical retrieval** — top-10 via `BM25Retriever` over the same corpus.
+- **Fusion** — Reciprocal Rank Fusion (k=60) merges both ranked lists into one, rewarding chunks that rank well in *either* method without requiring score normalization across methods.
+- **Reranking** — a cross-encoder scores each fused candidate jointly against the query and re-sorts; only the top 5 proceed to generation.
+- **Generation** — the top-5 chunks are inserted into a prompt template instructing the model to answer only from context (or say it doesn't know), sent to `nvidia/nemotron-3-ultra-550b-a55b` via OpenRouter.
+- **UI** — Streamlit handles query input and renders the answer, with spinners marking each pipeline stage.
 
-3. **Install dependencies**
-   ```bash
-   pip install -r requirement.txt
-   ```
+---
 
-4. **Configure environment variables**
-   Create a `.env` file in the project root:
-   ```env
-   HF_TOKEN=your_huggingface_token_here
-   OPENROUTER_FREE_RAG=your_openrouter_api_key_here
-   ```
+## Stack
 
-5. **Add research papers**
-   - Place all PDF files in the `PDF's/` directory
-   - The system will automatically discover and load them
+| Component | Choice |
+|---|---|
+| Document parsing | Docling (`langchain_docling`) |
+| Chunking | LangChain `RecursiveCharacterTextSplitter` |
+| Embeddings | OpenAI `text-embedding-3-small` (via OpenRouter) |
+| Vector store | Chroma (persisted, local) |
+| Lexical retrieval | BM25 (`langchain_community`) |
+| Fusion | Reciprocal Rank Fusion, self-implemented |
+| Reranking | `cross-encoder/ms-marco-MiniLM-L-6-v2` |
+| Generation | Nvidia Nemotron (via OpenRouter) |
+| Interface | Streamlit |
 
-### Running the Application
+---
 
-#### Step 1: Index Documents
+## Repo Structure
+
+```
+.
+├── PDF's/              # source documents
+├── load.py             # parse → chunk → serialize
+├── embed.py            # embed → store (idempotent via content hash)
+├── Retrieval.py         # hybrid retrieval → fusion → rerank → generate → UI
+├── chunks.pkl          # serialized chunks (output of load.py)
+├── requirement.txt     # dependencies
+└── .gitignore
+```
+
+---
+
+## Design Decisions Worth Calling Out
+
+- **Fusion over score-blending**: RRF was chosen over normalizing and summing raw scores from BM25 and cosine similarity, since the two scores live on different, non-comparable scales. RRF only needs each method's *rank order*, sidestepping that problem entirely.
+- **Rerank after fusion, not before**: reranking is the most expensive step (cross-encoder inference is quadratic-ish in cost relative to bi-encoder embedding lookup), so it runs once on the fused candidate set rather than on each retrieval method's output separately.
+- **Content-hash dedup on ingest**: re-running `embed.py` against an updated PDF folder won't duplicate previously-embedded chunks, which matters for a corpus that grows over time.
+
+---
+
+## Running It
+
 ```bash
-python Chunking.py
+pip install -r requirement.txt
 ```
 
-This will:
-- 🔁 Load all 6 research papers + Annotated Transformer
-- 📃 Extract text using Docling
-- ✂️ Split into overlapping chunks (100 token overlap)
-- 💾 Store embeddings in Chroma vector database (`my_db/`)
+Set environment variables (`.env`):
+```
+OPENROUTER_FREE_RAG=<your OpenRouter API key>
+HF_TOKEN=<your HuggingFace token>
+```
 
-**Output:** `my_db/` directory with indexed vectors
-
-#### Step 2: Launch Interactive RAG Interface
 ```bash
+python load.py     # parse PDFs + web source → chunks.pkl
+python embed.py    # embed chunks → Chroma store
 streamlit run Retrieval.py
 ```
 
-Navigate to `http://localhost:8501` and start asking questions!
-
 ---
 
-## 💡 How It Works
+## Known Limitations / Next Steps
 
-### Chunking Strategy (`Chunking.py`)
-
-**Input:** PDFs + URL (Annotated Transformer)
-- Uses **Docling** for robust PDF parsing (handles complex layouts)
-- Metadata preservation (source, page numbers)
-
-**Processing:**
-- **Splitter:** `RecursiveCharacterTextSplitter`
-- **Chunk Size:** Default (optimal for semantic coherence)
-- **Overlap:** 100 tokens (reduces context loss at chunk boundaries)
-- **Separator:** `\n\n` (respects paragraph structure)
-
-**Output:** Chroma vectorstore with OpenAI text-embedding-3-small embeddings
-
-### Hybrid Retrieval Strategy (`Retrieval.py`)
-
-#### Dense Retrieval (Semantic)
-```python
-docs_retrieve_similarity = vector_store.similarity_search(Query, k=5)
-```
-- **Embedder:** OpenAI text-embedding-3-small (via OpenRouter)
-- **Metric:** Cosine similarity
-- **Returns:** 5 semantically closest documents
-
-#### Sparse Retrieval (Lexical)
-```python
-retriever_bm25 = BM25Retriever.from_documents(documents=docs)
-docs_retrieve_bm25 = retriever_bm25.invoke(Query)
-```
-- **Algorithm:** BM25 (probabilistic ranking)
-- **Strength:** Captures exact keyword matches, acronyms
-- **Returns:** 5 lexically relevant documents
-
-#### Reciprocal Rank Fusion (RRF)
-```python
-fused = rrf([docs_retrieve_bm25, docs_retrieve_similarity], k=60)
-```
-- **Formula:** Score = Σ 1/(k + rank + 1) across retrievers
-- **Benefit:** Combines semantic + keyword strengths, reduces hallucination
-- **Returns:** Re-ranked, deduplicated top documents
-
-### LLM Answer Generation
-
-**Prompt:** Context-aware chain-of-thought template
-- Forces grounding in retrieved documents
-- Prevents fabrication ("say you don't know")
-- Temperature: 0.4 (factual, less creative)
-
-**Model:** Nvidia Nemotron-3 Ultra 550B (via OpenRouter)
-- Free tier available
-- Strong reasoning capabilities
-- Optimized for instruction-following
-
----
-
-## 📊 Expected Performance
-
-### Retrieval Metrics
-- **Precision@5:** High (hybrid approach reduces noise)
-- **Recall:** Improved vs. single-method retrieval
-- **Latency:** ~2-3s per query (embedding + BM25 + LLM)
-
-### Query Examples
-✅ "What is byte-pair encoding?"  
-✅ "Explain self-attention in transformers"  
-✅ "How do position embeddings work?"  
-✅ "What are the advantages of multi-head attention?"  
-
----
-
-## 🔧 Configuration & Customization
-
-### Adjust Retrieval Parameters
-
-**In `Chunking.py`:**
-```python
-chunker = RecursiveCharacterTextSplitter(
-    separators="\n\n",          # Change separator logic
-    chunk_overlap=100            # Increase for more context overlap
-)
-```
-
-**In `Retrieval.py`:**
-```python
-retriever_bm25.k = 5             # Number of BM25 results
-docs_retrieve_similarity = vector_store.similarity_search(Query, k=5)  # Dense results
-rrf(..., k=60)                   # RRF reciprocal depth (higher = smoother)
-```
-
-### Swap Embedding Model
-```python
-OpenAIEmbeddings(
-    model='openai/text-embedding-3-large',  # Larger model, higher quality
-    api_key=api_key,
-    base_url="https://openrouter.ai/api/v1"
-)
-```
-
-### Swap LLM
-```python
-llm = ChatOpenAI(
-    model='openai/gpt-4-turbo',  # Or any OpenRouter model
-    api_key=api_key,
-    base_url="https://openrouter.ai/api/v1",
-    temperature=0.4
-)
-```
-
----
-
-## 📚 Research Papers Included
-
-The `PDF's/` directory should contain papers covering:
-
-1. **Tokenization**
-   - BPE (Byte-Pair Encoding)
-   - WordPiece
-   - SentencePiece implementations
-
-2. **Self-Attention & Transformers**
-   - Attention Is All You Need
-   - Variations & improvements
-   - Efficiency optimizations
-
-3. **Supplementary**
-   - Annotated Transformer Tutorial (URL-based)
-
----
-
-## 🛠️ Troubleshooting
-
-### Common Issues
-
-**❌ `ModuleNotFoundError: No module named 'langchain_docling'`**
-```bash
-pip install langchain-docling
-```
-
-**❌ `FAILED due to exception` during PDF loading**
-- Check PDF file integrity
-- Ensure HF_TOKEN is valid (Docling uses HuggingFace)
-- Try removing corrupted PDF and re-running
-
-**❌ Empty or poor retrieval results**
-- Check that `my_db/` directory exists (run `Chunking.py` first)
-- Verify API key has sufficient quota
-- Increase `k` values in retrieval calls
-
-**❌ `OpenRouter` API errors**
-- Verify `OPENROUTER_FREE_RAG` key is correct
-- Check rate limits (free tier has limits)
-- Switch to paid tier if needed
-
----
-
-## 📈 Future Enhancements
-
-- [ ] **Cross-Encoder Reranking:** Add a cross-encoder model (ms-marco-MiniLM) for final ranking
-- [ ] **Query Expansion:** Multi-query and hypothetical document embeddings
-- [ ] **Metadata Filtering:** Search by paper title, date, topic
-- [ ] **LLM Cache:** Reduce redundant API calls for repeated queries
-- [ ] **Evaluation Framework:** Implement RAGAS metrics (context precision, faithfulness)
-- [ ] **Batch Inference:** Handle multiple concurrent queries
-
----
-
-## 📝 License
-
-This project is for educational and research purposes.
-
----
-
-## 🤝 Contributing
-
-Suggestions for improving retrieval quality or adding new papers? Open an issue or submit a PR!
-
----
-
-## 📧 Questions?
-
-For issues or feature requests, refer to the project documentation or troubleshooting section above.
-
----
-
-**Built with ❤️ for understanding LLM internals** 🚀
+- No evaluation harness yet (retrieval precision/recall, answer faithfulness) — next priority for making the "hybrid + rerank improves quality" claim measurable rather than assumed.
+- Single fixed `k` at each stage (10/10/60/5) — not yet tuned against a labeled query set.
+- No chunk-size/overlap ablation — current values (separator-based, overlap=100) are a reasonable default, not a benchmarked choice.
+- Generation model is a free-tier OpenRouter model, chosen for cost during development rather than benchmarked quality.
