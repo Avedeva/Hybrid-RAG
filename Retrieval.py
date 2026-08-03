@@ -1,5 +1,6 @@
 import streamlit as st
 from langchain_chroma import Chroma
+from sentence_transformers import CrossEncoder
 from dotenv import load_dotenv
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import OpenAIEmbeddings,ChatOpenAI
@@ -14,6 +15,7 @@ st.title("RAG",text_alignment="center")
 
 load_dotenv()
 api_key = os.getenv("OPENROUTER_FREE_RAG")
+api_nvdia = os.getenv("NVIDIA_API_KEY")
 
 vector_store = Chroma(
     embedding_function=OpenAIEmbeddings(
@@ -34,75 +36,101 @@ for i in raw['documents']:
 
 
 
+Query = st.text_input("Enter Your Query",)
 
-
-
-Query = st.chat_input("Ask anything from tokeizer,self attention..")
 if not Query:
     st.stop()
 
-with st.spinner("🔁 Retrieving Doc's .... "):
-# retrieving using the bm25
-    retriever_bm25 = BM25Retriever.from_documents(documents=docs)
-    retriever_bm25.k = 5
-    docs_retrieve_bm25 = retriever_bm25.invoke(Query)
-# retrieving from using cosine similarity
-    docs_retrieve_similarity = vector_store.similarity_search(Query,k=5)
 
-with st.spinner("🤖Cross-Encoder Reranker"):
-    pass
-
-
-
-
-with st.spinner(" 📚 Getting the best match for the query ...."):
-#fusing both result to get besult result
-    def rrf(ranked_list,k=60):
-
-        scores = {}
-        doc_map = {}
-
-        for i in ranked_list:
-            for rank,doc in enumerate(i):
-                key = doc.page_content
-                scores[key] = scores.get(key,0)+1/(k+rank+1)
-                doc_map[key] = doc
+else:
+    with st.spinner("🔁 Retrieving Doc's .... "):
+        # retrieving using the bm25
+            docs_ = []
+            retriever_bm25 = BM25Retriever.from_documents(documents=docs)
+            retriever_bm25.k = 10
+            docs_retrieve_bm25 = retriever_bm25.invoke(Query)
+            docs_.append(docs_retrieve_bm25)
+        # retrieving from using cosine similarity
+            docs_retrieve_similarity = vector_store.similarity_search(Query,k=10)
+            docs_.append(docs_retrieve_similarity)
 
 
-        sorted_keys = sorted(scores ,key=lambda x:scores[x],reverse = True)
-
-        return [doc_map[keys] for keys in sorted_keys]
 
 
-    fused = rrf([docs_retrieve_bm25,docs_retrieve_similarity],k=60)
 
 
-with st.spinner('🤖 calling an llm... '):
-# calling llm to answer the query using docs
-    prompt = PromptTemplate(
-        template="""You are a helpful assistant for question-answering tasks.
-    Use the following pieces of retrieved context to answer the question.
-    If you don't know the answer based on the context, just say that you don't know.
-    Keep the answer concise and accurate. Do not make up information.
 
-    Context:
-    {fused}
 
-    Question: {Query}""",
-    input_variables=['fused','Query']
+    with st.spinner(" 📚 RRF...."):
+            #fusing both result to get besult result
+                def rrf(ranked_list,k=60):
+
+                    scores = {}
+                    doc_map = {}
+
+                    for i in ranked_list:
+                        for rank,doc in enumerate(i):
+                            key = doc.page_content
+                            scores[key] = scores.get(key,0)+1/(k+rank+1)
+                            doc_map[key] = doc
+
+
+                    sorted_keys = sorted(scores ,key=lambda x:scores[x],reverse = True)
+
+                    return [doc_map[keys] for keys in sorted_keys]
+
+
+                ranked_chunks = rrf([docs_retrieve_bm25,docs_retrieve_similarity],k=60)
+
+
+    with st.spinner("😵Reranking the Doc's"):
+
+        # Good general-purpose model
+        reranker = CrossEncoder(
+            "cross-encoder/ms-marco-MiniLM-L-6-v2"
+        )
+
+        pairs = [(Query,i.page_content) for i in ranked_chunks ]
+
+        scores = reranker.predict(pairs)
+
+        ranked = sorted(
+        zip(scores, ranked_chunks),
+        key=lambda x: x[0],
+        reverse=True
     )
 
-    llm = ChatOpenAI(
-        model='nvidia/nemotron-3-ultra-550b-a55b:free',
-        api_key=api_key,
-        base_url="https://openrouter.ai/api/v1",
-        temperature=0.4
-    )
+    ranked_chunks = [doc for score, doc in ranked[:5]]
 
-    parser = StrOutputParser()
 
-    chain = prompt|llm|parser
 
-    result = chain.invoke({'fused':fused,'Query':Query})
 
-st.write(result)
+    with st.spinner('🤖 calling an llm... '):
+        # calling llm to answer the query using docs
+            prompt = PromptTemplate(
+                template="""You are a helpful assistant for question-answering tasks.
+            Use the following pieces of retrieved context to answer the question.
+            If you don't know the answer based on the context, just say that you don't know.
+            Keep the answer concise and accurate. Do not make up information.
+
+            Context:
+            {ranked_chunks}
+
+            Question: {Query}""",
+            input_variables=['ranked_chunks','Query']
+            )
+
+            llm = ChatOpenAI(
+                model='nvidia/nemotron-3-ultra-550b-a55b:free',
+                api_key=api_key,
+                base_url="https://openrouter.ai/api/v1",
+                temperature=0.4
+            )
+
+            parser = StrOutputParser()
+
+            chain = prompt|llm|parser
+
+            result = chain.invoke({'ranked_chunks':ranked_chunks,'Query':Query})
+
+            st.write(result)

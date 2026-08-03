@@ -50,4 +50,4 @@ def store_in_dbs(api_key,directory_loc,chunks):
     return vector_store
 
 vectore_store = store_in_dbs(api_key,"my_db",chunks)
-print(vectore_store)
+print(vectore_store._collection.count())
