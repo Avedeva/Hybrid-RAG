@@ -26,45 +26,7 @@ vector_store = Chroma(
     collection_name='sample'
     )
 
-
-
-raw = vector_store.get(include=['documents','metadatas'])
-
-docs = []
-for i in raw['documents']:
-    docs.append(Document(page_content=i,))
-
-
-
-Query = st.text_input("Enter Your Query",)
-
-if not Query:
-    st.stop()
-
-
-else:
-    with st.spinner("🔁 Retrieving Doc's .... "):
-        # retrieving using the bm25
-            docs_ = []
-            retriever_bm25 = BM25Retriever.from_documents(documents=docs)
-            retriever_bm25.k = 10
-            docs_retrieve_bm25 = retriever_bm25.invoke(Query)
-            docs_.append(docs_retrieve_bm25)
-        # retrieving from using cosine similarity
-            docs_retrieve_similarity = vector_store.similarity_search(Query,k=10)
-            docs_.append(docs_retrieve_similarity)
-
-
-
-
-
-
-
-
-    with st.spinner(" 📚 RRF...."):
-            #fusing both result to get besult result
-                def rrf(ranked_list,k=60):
-
+def rrf(ranked_list,k=60):
                     scores = {}
                     doc_map = {}
 
@@ -80,15 +42,51 @@ else:
                     return [doc_map[keys] for keys in sorted_keys]
 
 
-                ranked_chunks = rrf([docs_retrieve_bm25,docs_retrieve_similarity],k=60)
+raw = vector_store.get(include=['documents','metadatas'])
+
+docs = []
+for i in raw['documents']:
+    docs.append(Document(page_content=i))
+
+
+
+Query = st.text_input("Enter Your Query",)
+
+if not Query:
+    st.stop()
+
+
+else:
+    with st.spinner("🔁 Retrieving Doc's .... "):
+        # retrieving using the bm25
+            retriever_bm25 = BM25Retriever.from_documents(documents=docs)
+            retriever_bm25.k = 10
+            docs_retrieve_bm25 = retriever_bm25.invoke(Query)
+
+        # retrieving from using cosine similarity
+            docs_retrieve_similarity = vector_store.similarity_search(Query,k=10)
+
+
+
+
+
+
+
+
+
+    with st.spinner(" 📚 RRF...."):
+            #fusing both result to get besult result
+            ranked_chunks = rrf([docs_retrieve_bm25,docs_retrieve_similarity],k=60)
 
 
     with st.spinner("😵Reranking the Doc's"):
 
         # Good general-purpose model
-        reranker = CrossEncoder(
-            "cross-encoder/ms-marco-MiniLM-L-6-v2"
-        )
+        @ st.cache_resource
+        def load_model():
+            return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
+
+        reranker = load_model()
 
         pairs = [(Query,i.page_content) for i in ranked_chunks ]
 
