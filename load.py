@@ -6,6 +6,8 @@ paths = []
 for file in files:
     paths.append(file)
 
+paths.extend(Path("PDF's").rglob("*.docx"))
+
 
 
 # important iports and adding 1 url in paths
@@ -38,7 +40,7 @@ for i,doc in enumerate(docs,start=1):
 
 
 # printing the docs (seeing the format is correct or not)
-for i in content:
+for i in content[:2]:
     print(i)
 
 
@@ -76,7 +78,7 @@ for i in range(len(chunks)):
     print("Content length of chunk",len(chunks[i].page_content),"\n",chunks[i])
     print("\n")
     print("-"*80)
-    if i == 3:
+    if i == 1:
         break
 
 import pickle

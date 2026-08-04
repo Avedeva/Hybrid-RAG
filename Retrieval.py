@@ -7,6 +7,7 @@ from langchain_openai import OpenAIEmbeddings,ChatOpenAI
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.documents import Document
 from langchain_community.retrievers import BM25Retriever
+from langchain_core.messages import HumanMessage,SystemMessage,AIMessage
 import time
 import os
 
@@ -16,9 +17,11 @@ st.title("RAG",text_alignment="center")
 
 load_dotenv()
 api_key = os.getenv("OPENROUTER_FREE_RAG")
-api_nvdia = os.getenv("NVIDIA_API_KEY")
 
-vector_store = Chroma(
+@ st.cache_resource
+
+def db():
+    return Chroma(
     embedding_function=OpenAIEmbeddings(
         model='text-embedding-3-small',
         api_key=api_key,
@@ -26,6 +29,9 @@ vector_store = Chroma(
     ),persist_directory="my_db",
     collection_name='sample'
     )
+
+def load_model():
+            return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
 def rrf(ranked_list,k=60):
                     scores = {}
@@ -46,12 +52,24 @@ def rrf(ranked_list,k=60):
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
 
+vector_store = db()
 
 raw = vector_store.get(include=['documents','metadatas'])
 
 docs = []
 for i in raw['documents']:
     docs.append(Document(page_content=i))
+
+
+for message in st.session_state.chat_history:
+    if isinstance(message,HumanMessage):
+        with st.chat_message('human'):
+            st.write(message.content)
+
+    elif isinstance(message,AIMessage):
+        with st.chat_message('ai'):
+            st.write(message.content)
+
 
 
 
@@ -63,7 +81,7 @@ if not Query:
 
 else:
     with st.chat_message('user'):
-        st.session_state.chat_history.append(Query)
+        st.session_state.chat_history.append(HumanMessage(content=Query))
         st.write(Query)
 
     with st.spinner("🔁 Retrieving Doc's .... "):
@@ -74,7 +92,7 @@ else:
 
         # retrieving from using cosine similarity
             docs_retrieve_similarity = vector_store.similarity_search(Query,k=10)
-            time.sleep(2)
+            time.sleep(1)
 
 
 
@@ -86,16 +104,13 @@ else:
     with st.spinner(" 📚 RRF...."):
             #fusing both result to get besult result
             ranked_chunks = rrf([docs_retrieve_bm25,docs_retrieve_similarity],k=60)
-            time.sleep(2)
+            time.sleep(1)
 
 
 
     with st.spinner("😵Reranking the Doc's"):
 
         # Good general-purpose model
-        @ st.cache_resource
-        def load_model():
-            return CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
         reranker = load_model()
 
@@ -143,5 +158,5 @@ else:
 
             result = chain.invoke({'ranked_chunks':ranked_chunks,'Query':Query})
             with st.chat_message('ai'):
-                st.session_state.chat_history.append(result)
+                st.session_state.chat_history.append(AIMessage(content = result))
                 st.write(result)
